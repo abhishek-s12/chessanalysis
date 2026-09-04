@@ -4,6 +4,7 @@ import 'package:chess_analyzer/models/chess_game.dart';
 import 'package:chess_analyzer/models/move_analysis.dart';
 import 'package:chess_analyzer/screens/review_screen.dart';
 import 'package:chess_analyzer/widgets/eval_bar.dart';
+import 'package:chess_analyzer/widgets/engine_lines_panel.dart';
 
 void main() {
   group('ReviewScreen Widget Tests', () {
@@ -118,9 +119,10 @@ void main() {
       expect(find.text('88.5%'), findsOneWidget);
       expect(find.text('82.0%'), findsOneWidget);
 
-      // Verify Chessboard and Eval bar are present
+      // Verify Chessboard, Eval bar and EngineLinesPanel are present
       expect(find.byKey(const ValueKey('chessboard_view')), findsOneWidget);
       expect(find.byType(EvalBar), findsOneWidget);
+      expect(find.byType(EngineLinesPanel), findsOneWidget);
 
       // Verify moves in move list
       expect(find.text('e4'), findsOneWidget);

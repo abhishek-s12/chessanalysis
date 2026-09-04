@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:chess/chess.dart' as chess_pkg;
 import 'stockfish_driver_stub.dart'
     if (dart.library.io) 'stockfish_driver_io.dart';
@@ -46,6 +47,69 @@ class StockfishEvaluation {
   }
 }
 
+/// Represents a candidate line evaluated by the engine under MultiPV mode.
+class EngineLine {
+  /// Line rank (1 for top choice, 2 for second choice, etc.)
+  final int multipv;
+
+  /// Centipawn score normalized to White's perspective (+ White ahead, - Black ahead).
+  final int? centipawns;
+
+  /// Moves to mate (+ White mating, - Black mating).
+  final int? mateIn;
+
+  /// Recommended move in UCI format (e.g. "e2e4").
+  final String bestMoveUci;
+
+  /// Recommended move in standard algebraic notation (e.g. "e4", "Nf3").
+  final String bestMoveSan;
+
+  /// Full continuation sequence in UCI notation.
+  final List<String> pvUci;
+
+  /// Full continuation sequence in SAN notation.
+  final List<String> pvSan;
+
+  /// Search depth reached.
+  final int depth;
+
+  const EngineLine({
+    required this.multipv,
+    this.centipawns,
+    this.mateIn,
+    required this.bestMoveUci,
+    required this.bestMoveSan,
+    this.pvUci = const [],
+    this.pvSan = const [],
+    required this.depth,
+  });
+
+  bool get isMate => mateIn != null;
+
+  /// Formatted score string (e.g. "+1.5", "-0.8", "+M2", "-M1").
+  String get scoreString {
+    if (mateIn != null) {
+      return mateIn! > 0 ? '+M$mateIn' : '-M${mateIn!.abs()}';
+    }
+    if (centipawns == null) return '0.0';
+    final score = centipawns! / 100.0;
+    return score >= 0 ? '+${score.toStringAsFixed(1)}' : score.toStringAsFixed(1);
+  }
+
+  /// Formatted sequence preview of the first few continuation moves.
+  String get formattedContinuation {
+    if (pvSan.length > 1) {
+      return pvSan.skip(1).take(5).join(' ');
+    }
+    return '';
+  }
+
+  @override
+  String toString() {
+    return 'EngineLine(multipv: $multipv, eval: $scoreString, move: $bestMoveSan, pv: $pvSan)';
+  }
+}
+
 /// Abstract interface for UCI engine drivers.
 abstract class IStockfishDriver {
   Stream<String> get stdout;
@@ -55,12 +119,20 @@ abstract class IStockfishDriver {
   void dispose();
 }
 
+class _ScoredMove {
+  final Map<String, dynamic> move;
+  final int sideScore;
+  final String uci;
+  _ScoredMove({required this.move, required this.sideScore, required this.uci});
+}
+
 /// Fallback UCI driver for desktop, web, and automated test environments
 /// where native C++ libraries (`.so` / `.framework`) are not bundled.
 class FallbackStockfishDriver implements IStockfishDriver {
   final StreamController<String> _stdoutController = StreamController<String>.broadcast();
   bool _ready = false;
   String _currentFen = chess_pkg.Chess.DEFAULT_POSITION;
+  int _multiPv = 1;
 
   @override
   Stream<String> get stdout => _stdoutController.stream;
@@ -82,6 +154,9 @@ class FallbackStockfishDriver implements IStockfishDriver {
       _stdoutController.add('uciok');
     } else if (cmd == 'isready') {
       _stdoutController.add('readyok');
+    } else if (cmd.startsWith('setoption name MultiPV value ')) {
+      final valStr = cmd.substring('setoption name MultiPV value '.length).trim();
+      _multiPv = int.tryParse(valStr) ?? 1;
     } else if (cmd.startsWith('position fen ')) {
       _currentFen = cmd.substring('position fen '.length).trim();
     } else if (cmd.startsWith('position startpos')) {
@@ -113,11 +188,8 @@ class FallbackStockfishDriver implements IStockfishDriver {
         return;
       }
 
-      // Find the best move using classical heuristic evaluation
-      Map<String, dynamic> bestMoveData = legalMoves.first as Map<String, dynamic>;
-      int bestScore = -999999;
-
       final isWhite = chess.turn == chess_pkg.Color.WHITE;
+      final List<_ScoredMove> scored = [];
 
       for (final rawMove in legalMoves) {
         final moveMap = rawMove as Map<String, dynamic>;
@@ -125,28 +197,30 @@ class FallbackStockfishDriver implements IStockfishDriver {
         int score = _evaluateMaterialAndPosition(chess);
         chess.undo();
 
-        if (!isWhite) {
-          score = -score;
-        }
+        final sideScore = isWhite ? score : -score;
 
-        if (score > bestScore) {
-          bestScore = score;
-          bestMoveData = moveMap;
-        }
+        final from = moveMap['from'] as String;
+        final to = moveMap['to'] as String;
+        final promo = moveMap['promotion'] != null ? (moveMap['promotion'] as String).toLowerCase() : '';
+        final uci = '$from$to$promo';
+
+        scored.add(_ScoredMove(move: moveMap, sideScore: sideScore, uci: uci));
       }
 
-      // Convert best move to UCI notation
-      final from = bestMoveData['from'] as String;
-      final to = bestMoveData['to'] as String;
-      final promo = bestMoveData['promotion'] != null ? (bestMoveData['promotion'] as String).toLowerCase() : '';
-      final uciBestMove = '$from$to$promo';
+      // Sort candidate moves descending by side score
+      scored.sort((a, b) => b.sideScore.compareTo(a.sideScore));
 
-      // Output progressive info lines culminating in the target depth
-      final sideMultiplier = isWhite ? 1 : -1;
-      final reportedCp = bestScore * sideMultiplier;
+      final linesToEmit = math.min(scored.length, _multiPv);
+      for (int i = 0; i < linesToEmit; i++) {
+        final candidate = scored[i];
+        final rank = i + 1;
+        _stdoutController.add(
+          'info depth $depth multipv $rank score cp ${candidate.sideScore} pv ${candidate.uci}',
+        );
+      }
 
-      _stdoutController.add('info depth $depth seldepth ${depth + 2} score cp $reportedCp pv $uciBestMove');
-      _stdoutController.add('bestmove $uciBestMove');
+      final bestUci = scored.first.uci;
+      _stdoutController.add('bestmove $bestUci');
     });
   }
 
@@ -191,6 +265,16 @@ class FallbackStockfishDriver implements IStockfishDriver {
     _stdoutController.close();
     _ready = false;
   }
+}
+
+class _RawEngineLine {
+  final int multipv;
+  int? centipawns;
+  int? mateIn;
+  List<String> pvUci = [];
+  int depth = 1;
+
+  _RawEngineLine({required this.multipv});
 }
 
 /// High-level Stockfish Engine service that manages initialization,
@@ -287,7 +371,7 @@ class StockfishEngine {
           lastCp = null;
         }
 
-        final pvMatch = RegExp(r'pv\s+(.*)$').firstMatch(trimmed);
+        final pvMatch = RegExp(r'\bpv\s+(.*)$').firstMatch(trimmed);
         if (pvMatch != null) {
           lastPv = pvMatch.group(1)!.trim().split(RegExp(r'\s+'));
         }
@@ -310,6 +394,7 @@ class StockfishEngine {
       }
     });
 
+    _driver.sendCommand('setoption name MultiPV value 1');
     _driver.sendCommand('position fen $fen');
     _driver.sendCommand('go depth $depth');
 
@@ -319,10 +404,171 @@ class StockfishEngine {
       return eval;
     } catch (e) {
       await sub.cancel();
-      // In case of timeout or cancellation, send stop
       _driver.sendCommand('stop');
       rethrow;
     }
+  }
+
+  /// Evaluates the top candidate lines (MultiPV) for the given [fen] position.
+  ///
+  /// Converts all UCI moves into readable algebraic notation (SAN) based on the board state.
+  Future<List<EngineLine>> evaluateTopLines(
+    String fen, {
+    int multiPv = 3,
+    int depth = 10,
+    Duration timeout = const Duration(seconds: 8),
+  }) async {
+    if (!_isInitialized) {
+      await init();
+    }
+
+    final completer = Completer<List<EngineLine>>();
+    final Map<int, _RawEngineLine> rawLines = {};
+    late StreamSubscription sub;
+
+    final parts = fen.trim().split(RegExp(r'\s+'));
+    final bool isWhiteToMove = parts.length > 1 ? parts[1] == 'w' : true;
+
+    sub = _driver.stdout.listen((line) {
+      final trimmed = line.trim();
+
+      if (trimmed.startsWith('info') && trimmed.contains('score')) {
+        // MultiPV rank
+        final mpMatch = RegExp(r'multipv (\d+)').firstMatch(trimmed);
+        final mp = mpMatch != null ? int.parse(mpMatch.group(1)!) : 1;
+
+        final raw = rawLines.putIfAbsent(mp, () => _RawEngineLine(multipv: mp));
+
+        // Depth
+        final depthMatch = RegExp(r'depth (\d+)').firstMatch(trimmed);
+        if (depthMatch != null) {
+          raw.depth = int.parse(depthMatch.group(1)!);
+        }
+
+        // Score
+        final cpMatch = RegExp(r'score cp (-?\d+)').firstMatch(trimmed);
+        if (cpMatch != null) {
+          final rawCp = int.parse(cpMatch.group(1)!);
+          raw.centipawns = isWhiteToMove ? rawCp : -rawCp;
+          raw.mateIn = null;
+        }
+
+        final mateMatch = RegExp(r'score mate (-?\d+)').firstMatch(trimmed);
+        if (mateMatch != null) {
+          final rawMate = int.parse(mateMatch.group(1)!);
+          raw.mateIn = isWhiteToMove ? rawMate : -rawMate;
+          raw.centipawns = null;
+        }
+
+        // PV line
+        final pvMatch = RegExp(r'\bpv\s+(.*)$').firstMatch(trimmed);
+        if (pvMatch != null) {
+          raw.pvUci = pvMatch.group(1)!.trim().split(RegExp(r'\s+'));
+        }
+      }
+
+      if (trimmed.startsWith('bestmove')) {
+        if (!completer.isCompleted) {
+          final sortedRaws = rawLines.values.toList()
+            ..sort((a, b) => a.multipv.compareTo(b.multipv));
+
+          final List<EngineLine> results = [];
+          for (final raw in sortedRaws) {
+            final bestMoveUci = raw.pvUci.isNotEmpty ? raw.pvUci.first : '';
+            if (bestMoveUci.isEmpty || bestMoveUci == '(none)') continue;
+
+            final sanPv = _convertPvToSan(fen, raw.pvUci);
+            final bestMoveSan = sanPv.isNotEmpty ? sanPv.first : bestMoveUci;
+
+            results.add(EngineLine(
+              multipv: raw.multipv,
+              centipawns: raw.centipawns,
+              mateIn: raw.mateIn,
+              bestMoveUci: bestMoveUci,
+              bestMoveSan: bestMoveSan,
+              pvUci: raw.pvUci,
+              pvSan: sanPv,
+              depth: raw.depth,
+            ));
+          }
+          completer.complete(results);
+        }
+      }
+    });
+
+    _driver.sendCommand('setoption name MultiPV value $multiPv');
+    _driver.sendCommand('position fen $fen');
+    _driver.sendCommand('go depth $depth');
+
+    try {
+      final lines = await completer.future.timeout(timeout);
+      await sub.cancel();
+      return lines;
+    } catch (_) {
+      await sub.cancel();
+      _driver.sendCommand('stop');
+      // If timed out, return whatever lines were parsed so far
+      final sortedRaws = rawLines.values.toList()
+        ..sort((a, b) => a.multipv.compareTo(b.multipv));
+
+      final List<EngineLine> results = [];
+      for (final raw in sortedRaws) {
+        final bestMoveUci = raw.pvUci.isNotEmpty ? raw.pvUci.first : '';
+        if (bestMoveUci.isEmpty || bestMoveUci == '(none)') continue;
+
+        final sanPv = _convertPvToSan(fen, raw.pvUci);
+        final bestMoveSan = sanPv.isNotEmpty ? sanPv.first : bestMoveUci;
+
+        results.add(EngineLine(
+          multipv: raw.multipv,
+          centipawns: raw.centipawns,
+          mateIn: raw.mateIn,
+          bestMoveUci: bestMoveUci,
+          bestMoveSan: bestMoveSan,
+          pvUci: raw.pvUci,
+          pvSan: sanPv,
+          depth: raw.depth,
+        ));
+      }
+      return results;
+    }
+  }
+
+  static List<String> _convertPvToSan(String fen, List<String> pvUci) {
+    final List<String> sanMoves = [];
+    try {
+      final chess = chess_pkg.Chess.fromFEN(fen);
+      for (final uci in pvUci) {
+        if (uci.length < 4) break;
+        final from = uci.substring(0, 2);
+        final to = uci.substring(2, 4);
+        final promo = uci.length > 4 ? uci.substring(4, 5).toLowerCase() : null;
+
+        final legalMoves = chess.moves({'verbose': true});
+        Map<String, dynamic>? match;
+        for (final m in legalMoves) {
+          final moveMap = m as Map<String, dynamic>;
+          final mPromo = moveMap['promotion'] != null
+              ? (moveMap['promotion'] as String).toLowerCase()
+              : null;
+          if (moveMap['from'] == from &&
+              moveMap['to'] == to &&
+              (promo == null || mPromo == promo)) {
+            match = moveMap;
+            break;
+          }
+        }
+
+        if (match != null) {
+          final san = match['san'] as String;
+          sanMoves.add(san);
+          chess.move(san);
+        } else {
+          break;
+        }
+      }
+    } catch (_) {}
+    return sanMoves;
   }
 
   /// Shuts down the engine and releases resources.
@@ -332,3 +578,4 @@ class StockfishEngine {
     _isInitialized = false;
   }
 }
+

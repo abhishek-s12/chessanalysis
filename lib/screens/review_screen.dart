@@ -4,14 +4,17 @@ import 'package:chess/chess.dart' as chess_pkg;
 import 'package:simple_chess_board/simple_chess_board.dart';
 import '../models/chess_game.dart';
 import '../models/move_analysis.dart';
+import '../services/stockfish_engine.dart';
 import '../widgets/eval_bar.dart';
 import '../widgets/advantage_graph.dart';
+import '../widgets/engine_lines_panel.dart';
 
 class ReviewScreen extends StatefulWidget {
   final ChessGame game;
   final GameAnalysisResult analysis;
   final String searchedUsername;
   final Widget Function(BuildContext context, String fen, bool isFlipped, List<BoardArrow> arrows)? boardBuilder;
+  final StockfishEngine? engine;
 
   const ReviewScreen({
     super.key,
@@ -19,6 +22,7 @@ class ReviewScreen extends StatefulWidget {
     required this.analysis,
     required this.searchedUsername,
     this.boardBuilder,
+    this.engine,
   });
 
   @override
@@ -33,6 +37,14 @@ class _ReviewScreenState extends State<ReviewScreen> {
   final ScrollController _scrollController = ScrollController();
   bool _showStats = false;
 
+  late final StockfishEngine _stockfishEngine;
+  bool _ownsEngine = false;
+  final Map<String, List<EngineLine>> _linesCache = {};
+  List<EngineLine> _currentLines = [];
+  bool _isLoadingLines = false;
+  String? _previewLineMove;
+  int _linesRequestId = 0;
+
   @override
   void initState() {
     super.initState();
@@ -40,22 +52,69 @@ class _ReviewScreenState extends State<ReviewScreen> {
     _selectedPlyIndex = widget.analysis.moves.isNotEmpty ? 0 : -1;
     // Default orientation: if user was Black, put Black on bottom
     _isFlipped = !widget.game.isUserWhite(widget.searchedUsername);
+
+    if (widget.engine != null) {
+      _stockfishEngine = widget.engine!;
+    } else {
+      _stockfishEngine = StockfishEngine();
+      _ownsEngine = true;
+    }
+    _fetchLinesForCurrentPosition();
   }
 
   @override
   void dispose() {
     _playTimer?.cancel();
     _scrollController.dispose();
+    if (_ownsEngine) {
+      _stockfishEngine.dispose();
+    }
     super.dispose();
+  }
+
+  void _fetchLinesForCurrentPosition() async {
+    final fen = _currentFen;
+    if (_linesCache.containsKey(fen)) {
+      setState(() {
+        _currentLines = _linesCache[fen]!;
+        _isLoadingLines = false;
+      });
+      return;
+    }
+
+    final requestId = ++_linesRequestId;
+    setState(() {
+      _isLoadingLines = true;
+      _currentLines = [];
+    });
+
+    try {
+      final lines = await _stockfishEngine.evaluateTopLines(fen, multiPv: 3, depth: 8);
+      if (!mounted || _linesRequestId != requestId) return;
+      _linesCache[fen] = lines;
+      setState(() {
+        _currentLines = lines;
+        _isLoadingLines = false;
+      });
+    } catch (_) {
+      if (mounted && _linesRequestId == requestId) {
+        setState(() {
+          _isLoadingLines = false;
+        });
+      }
+    }
   }
 
   void _selectPly(int index) {
     if (index < -1 || index >= widget.analysis.moves.length) return;
     setState(() {
       _selectedPlyIndex = index;
+      _previewLineMove = null;
     });
     _scrollToActiveMove();
+    _fetchLinesForCurrentPosition();
   }
+
 
   void _nextMove() {
     if (_selectedPlyIndex < widget.analysis.moves.length - 1) {
@@ -115,6 +174,18 @@ class _ReviewScreenState extends State<ReviewScreen> {
   }
 
   List<BoardArrow> get _currentArrows {
+    if (_previewLineMove != null && _previewLineMove!.length >= 4) {
+      final from = _previewLineMove!.substring(0, 2);
+      final to = _previewLineMove!.substring(2, 4);
+      return [
+        BoardArrow(
+          from: from,
+          to: to,
+          color: const Color(0xFF5C8BB0),
+        ),
+      ];
+    }
+
     if (_selectedPlyIndex < 0 || _selectedPlyIndex >= widget.analysis.moves.length) {
       return const [];
     }
@@ -210,10 +281,26 @@ class _ReviewScreenState extends State<ReviewScreen> {
                         ),
                         // Divider
                         const VerticalDivider(color: Color(0xFF36322C), width: 1),
-                        // Right: Scrollable Move List
+                        // Right: Engine Lines + Scrollable Move List
                         Expanded(
                           flex: 4,
-                          child: _buildMoveList(),
+                          child: Column(
+                            children: [
+                              EngineLinesPanel(
+                                lines: _currentLines,
+                                isLoading: _isLoadingLines,
+                                selectedLineUci: _previewLineMove,
+                                onSelectLine: (line) {
+                                  setState(() {
+                                    _previewLineMove = (_previewLineMove == line.bestMoveUci)
+                                        ? null
+                                        : line.bestMoveUci;
+                                  });
+                                },
+                              ),
+                              Expanded(child: _buildMoveList()),
+                            ],
+                          ),
                         ),
                       ],
                     );
@@ -225,6 +312,18 @@ class _ReviewScreenState extends State<ReviewScreen> {
                         _buildNavigationControls(),
                         _buildAdvantageGraph(),
                         _buildMoveExplainerCard(),
+                        EngineLinesPanel(
+                          lines: _currentLines,
+                          isLoading: _isLoadingLines,
+                          selectedLineUci: _previewLineMove,
+                          onSelectLine: (line) {
+                            setState(() {
+                              _previewLineMove = (_previewLineMove == line.bestMoveUci)
+                                  ? null
+                                  : line.bestMoveUci;
+                            });
+                          },
+                        ),
                         const Divider(color: Color(0xFF36322C), height: 1),
                         Expanded(child: _buildMoveList()),
                       ],
