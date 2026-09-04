@@ -234,10 +234,24 @@ void main() {
       expect(result.openingName, equals('Caro-Kann Defense: Gurgenidze System'));
       expect(result.hasOpening, isTrue);
 
+      // Verify that estimated Elo was calculated
+      expect(result.estimatedWhiteElo, isNotNull);
+      expect(result.estimatedWhiteElo, inInclusiveRange(1000, 3000));
+      expect(result.estimatedBlackElo, isNotNull);
+      expect(result.estimatedBlackElo, inInclusiveRange(1000, 3000));
+
       // Verify that the moves are classified as Book
       final bookMoves = result.moves.where((m) => m.classification == MoveClassification.book).toList();
       expect(bookMoves, isNotEmpty);
       expect(bookMoves.length, greaterThanOrEqualTo(4));
+    });
+
+    test('calculateEstimatedElo scales logically with accuracy', () {
+      expect(GameAnalyzer.calculateEstimatedElo(99.0), greaterThanOrEqualTo(2800));
+      expect(GameAnalyzer.calculateEstimatedElo(95.0), inInclusiveRange(2400, 2500));
+      expect(GameAnalyzer.calculateEstimatedElo(85.0), inInclusiveRange(1800, 2000));
+      expect(GameAnalyzer.calculateEstimatedElo(75.0), inInclusiveRange(1300, 1500));
+      expect(GameAnalyzer.calculateEstimatedElo(50.0), lessThan(1200));
     });
   });
 }

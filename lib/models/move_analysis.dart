@@ -227,6 +227,12 @@ class GameAnalysisResult {
   /// ECO classification code (e.g. "B90", "C65").
   final String? ecoCode;
 
+  /// Estimated performance rating (Elo) for White based on game accuracy.
+  final int? estimatedWhiteElo;
+
+  /// Estimated performance rating (Elo) for Black based on game accuracy.
+  final int? estimatedBlackElo;
+
   /// Timestamp when this analysis was completed.
   final DateTime analyzedAt;
 
@@ -237,6 +243,8 @@ class GameAnalysisResult {
     required this.blackAccuracy,
     this.openingName,
     this.ecoCode,
+    this.estimatedWhiteElo,
+    this.estimatedBlackElo,
     required this.analyzedAt,
   });
 
@@ -271,6 +279,8 @@ class GameAnalysisResult {
       'blackAccuracy': blackAccuracy,
       'openingName': openingName,
       'ecoCode': ecoCode,
+      'estimatedWhiteElo': estimatedWhiteElo,
+      'estimatedBlackElo': estimatedBlackElo,
       'analyzedAt': analyzedAt.toIso8601String(),
     };
   }
@@ -285,6 +295,8 @@ class GameAnalysisResult {
       blackAccuracy: (json['blackAccuracy'] as num).toDouble(),
       openingName: json['openingName'] as String?,
       ecoCode: json['ecoCode'] as String?,
+      estimatedWhiteElo: json['estimatedWhiteElo'] as int?,
+      estimatedBlackElo: json['estimatedBlackElo'] as int?,
       analyzedAt: json['analyzedAt'] != null
           ? DateTime.parse(json['analyzedAt'] as String)
           : DateTime.now(),

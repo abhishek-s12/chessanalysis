@@ -5,6 +5,7 @@ import 'package:simple_chess_board/simple_chess_board.dart';
 import '../models/chess_game.dart';
 import '../models/move_analysis.dart';
 import '../widgets/eval_bar.dart';
+import '../widgets/advantage_graph.dart';
 
 class ReviewScreen extends StatefulWidget {
   final ChessGame game;
@@ -199,6 +200,8 @@ class _ReviewScreenState extends State<ReviewScreen> {
                                 _buildBoardWithEval(),
                                 const SizedBox(height: 12),
                                 _buildNavigationControls(),
+                                const SizedBox(height: 8),
+                                _buildAdvantageGraph(),
                                 const SizedBox(height: 12),
                                 _buildMoveExplainerCard(),
                               ],
@@ -220,6 +223,7 @@ class _ReviewScreenState extends State<ReviewScreen> {
                       children: [
                         _buildBoardWithEval(),
                         _buildNavigationControls(),
+                        _buildAdvantageGraph(),
                         _buildMoveExplainerCard(),
                         const Divider(color: Color(0xFF36322C), height: 1),
                         Expanded(child: _buildMoveList()),
@@ -283,13 +287,27 @@ class _ReviewScreenState extends State<ReviewScreen> {
                     borderRadius: BorderRadius.circular(6),
                     border: Border.all(color: const Color(0xFF81B64C).withAlpha(90)),
                   ),
-                  child: Text(
-                    '$whiteAccuracy%',
-                    style: const TextStyle(
-                      color: Color(0xFF81B64C),
-                      fontWeight: FontWeight.bold,
-                      fontSize: 14,
-                    ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        '$whiteAccuracy%',
+                        style: const TextStyle(
+                          color: Color(0xFF81B64C),
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14,
+                        ),
+                      ),
+                      if (widget.analysis.estimatedWhiteElo != null)
+                        Text(
+                          'Est. ${widget.analysis.estimatedWhiteElo}',
+                          style: const TextStyle(
+                            color: Color(0xFF9ECE6A),
+                            fontSize: 10,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                    ],
                   ),
                 ),
               ],
@@ -320,13 +338,27 @@ class _ReviewScreenState extends State<ReviewScreen> {
                     borderRadius: BorderRadius.circular(6),
                     border: Border.all(color: const Color(0xFF81B64C).withAlpha(90)),
                   ),
-                  child: Text(
-                    '$blackAccuracy%',
-                    style: const TextStyle(
-                      color: Color(0xFF81B64C),
-                      fontWeight: FontWeight.bold,
-                      fontSize: 14,
-                    ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        '$blackAccuracy%',
+                        style: const TextStyle(
+                          color: Color(0xFF81B64C),
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14,
+                        ),
+                      ),
+                      if (widget.analysis.estimatedBlackElo != null)
+                        Text(
+                          'Est. ${widget.analysis.estimatedBlackElo}',
+                          style: const TextStyle(
+                            color: Color(0xFF9ECE6A),
+                            fontSize: 10,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                    ],
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -594,6 +626,15 @@ class _ReviewScreenState extends State<ReviewScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildAdvantageGraph() {
+    return AdvantageGraph(
+      moves: widget.analysis.moves,
+      selectedPlyIndex: _selectedPlyIndex,
+      onSelectPly: _selectPly,
+      isFlipped: _isFlipped,
     );
   }
 

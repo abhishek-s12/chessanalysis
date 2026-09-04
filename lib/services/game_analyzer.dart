@@ -116,21 +116,42 @@ class GameAnalyzer {
       // Check if this move is within the recognized theoretical opening book
       final isBookMove = i < openingInfo.bookPlyCount;
 
-      final classification = isBookMove
-          ? MoveClassification.book
-          : classifyMove(
-              uci: uci,
-              bestMove: bestMove,
-              winProbDelta: delta,
-              scoreBefore: scoreBefore,
-              scoreAfter: scoreAfter,
-              mateBefore: mateBefore,
-              mateAfter: mateAfter,
-              isWhite: isWhite,
-            );
+      // Check for Brilliant move: piece sacrifice where evaluation remains solid/winning
+      bool isBrilliant = false;
+      if (!isBookMove &&
+          bestMove.isNotEmpty &&
+          uci.toLowerCase() == bestMove.toLowerCase() &&
+          delta <= 0.5) {
+        final myBefore = _countMaterial(fenBefore, isWhite);
+        final myAfter = _countMaterial(fenAfter, isWhite);
+        final oppBefore = _countMaterial(fenBefore, !isWhite);
+        final oppAfter = _countMaterial(fenAfter, !isWhite);
+        final netSacrifice = (myBefore - myAfter) - (oppBefore - oppAfter);
+        if (netSacrifice >= 2 && winProbAfter >= 50.0) {
+          isBrilliant = true;
+        }
+      }
 
-      // Book moves do not penalize accuracy
-      final effectiveDelta = isBookMove ? 0.0 : delta;
+      final MoveClassification classification;
+      if (isBookMove) {
+        classification = MoveClassification.book;
+      } else if (isBrilliant) {
+        classification = MoveClassification.brilliant;
+      } else {
+        classification = classifyMove(
+          uci: uci,
+          bestMove: bestMove,
+          winProbDelta: delta,
+          scoreBefore: scoreBefore,
+          scoreAfter: scoreAfter,
+          mateBefore: mateBefore,
+          mateAfter: mateAfter,
+          isWhite: isWhite,
+        );
+      }
+
+      // Book and brilliant moves do not penalize accuracy
+      final effectiveDelta = (isBookMove || isBrilliant) ? 0.0 : delta;
 
       if (isWhite) {
         whiteDeltas.add(effectiveDelta);
@@ -163,9 +184,11 @@ class GameAnalyzer {
       onProgress?.call(i + 1, totalMoves);
     }
 
-    // 6. Calculate player accuracies
+    // 6. Calculate player accuracies and estimated ratings
     final whiteAccuracy = _calculateAccuracy(whiteDeltas);
     final blackAccuracy = _calculateAccuracy(blackDeltas);
+    final estimatedWhiteElo = calculateEstimatedElo(whiteAccuracy);
+    final estimatedBlackElo = calculateEstimatedElo(blackAccuracy);
 
     final result = GameAnalysisResult(
       gameUrl: cleanUrl,
@@ -174,6 +197,8 @@ class GameAnalyzer {
       blackAccuracy: blackAccuracy,
       openingName: openingInfo.name,
       ecoCode: openingInfo.eco,
+      estimatedWhiteElo: estimatedWhiteElo,
+      estimatedBlackElo: estimatedBlackElo,
       analyzedAt: DateTime.now(),
     );
 
@@ -253,5 +278,50 @@ class GameAnalyzer {
 
     final rawAccuracy = sumAccuracy / deltas.length;
     return double.parse(rawAccuracy.clamp(0.0, 100.0).toStringAsFixed(1));
+  }
+
+  /// Calculates realistic estimated player performance rating (Elo) from accuracy.
+  static int calculateEstimatedElo(double accuracy) {
+    double elo;
+    if (accuracy >= 98.0) {
+      elo = 2750 + (accuracy - 98.0) * 80;
+    } else if (accuracy >= 95.0) {
+      elo = 2450 + (accuracy - 95.0) * 100;
+    } else if (accuracy >= 90.0) {
+      elo = 2050 + (accuracy - 90.0) * 80;
+    } else if (accuracy >= 80.0) {
+      elo = 1600 + (accuracy - 80.0) * 45;
+    } else if (accuracy >= 70.0) {
+      elo = 1200 + (accuracy - 70.0) * 40;
+    } else {
+      elo = (accuracy / 70.0) * 1200;
+    }
+    // Round to nearest 10
+    final rounded = ((elo.clamp(400.0, 2950.0) / 10).round()) * 10;
+    return rounded;
+  }
+
+  /// Counts piece material points from a FEN string for a given color.
+  static int _countMaterial(String fen, bool forWhite) {
+    final board = fen.split(' ')[0];
+    const pieceValues = {
+      'p': 1,
+      'n': 3,
+      'b': 3,
+      'r': 5,
+      'q': 9,
+    };
+    int total = 0;
+    for (int i = 0; i < board.length; i++) {
+      final ch = board[i];
+      final lower = ch.toLowerCase();
+      if (pieceValues.containsKey(lower)) {
+        final isWhitePiece = ch == ch.toUpperCase();
+        if (isWhitePiece == forWhite) {
+          total += pieceValues[lower]!;
+        }
+      }
+    }
+    return total;
   }
 }
